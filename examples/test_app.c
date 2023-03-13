@@ -4,6 +4,7 @@
 #include "pico/time.h"
 #include "pico/multicore.h"
 #include "hardware/i2c.h"
+#include "hardware/irq.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -24,6 +25,7 @@
 #define PIN_ES100_EN  2
 #define PIN_ES100_IRQ 3
 
+uint64_t irq_timestamp = 0;
 uint64_t previous_irq_timestamp = 0;
 
 // This was the original application used for development and initial testing.
@@ -59,8 +61,9 @@ void warning(const char* format, ...){
 }
 
 
-void my_irq_handler(){
-    uint64_t irq_timestamp = time_us_64();
+void __isr my_irq_handler(){
+    irq_timestamp = time_us_64();
+    gpio_acknowledge_irq(PIN_ES100_IRQ, IO_IRQ_BANK0);
 
     int interrupt_status = es100_get_interrupt_status();
 
@@ -69,7 +72,12 @@ void my_irq_handler(){
 
     //RX Complete == 0x1, "Cycle complete" (unsuccessfully) == 0x4, else = ???
     if(interrupt_status != 0x1)
-        return;
+        return; 
+    else
+        print_timestamp();
+}
+
+void print_timestamp(){
 
     es100_status_0 *status = (es100_status_0*) malloc(sizeof(es100_status_0));
     int status_ret = es100_get_status(status);
@@ -106,7 +114,7 @@ void my_irq_handler(){
     
     printf(") uS(%" PRIu64 ") ", irq_timestamp);
     printf("uS Period(%" PRIu64 ") ", (irq_timestamp-previous_irq_timestamp));
-    printf("irq( %02x ) status( ", interrupt_status);
+    printf("status( ");
 
     if(status->rx_ok == true)
         printf("RX_OK ");
@@ -162,7 +170,11 @@ void core1_entry(){
     gpio_set_dir(PIN_ES100_EN, GPIO_OUT);
     gpio_set_dir(PIN_ES100_IRQ, GPIO_IN);
 
-    gpio_set_irq_enabled_with_callback(PIN_ES100_IRQ, GPIO_IRQ_EDGE_FALL, true, my_irq_handler);
+    //gpio_set_irq_enabled_with_callback(PIN_ES100_IRQ, GPIO_IRQ_EDGE_FALL, true, my_irq_handler);
+    irq_set_exclusive_handler(IO_IRQ_BANK0, my_irq_handler);
+    gpio_set_irq_enabled(PIN_ES100_IRQ, GPIO_IRQ_EDGE_FALL, true);
+    irq_set_enabled(IO_IRQ_BANK0, true);
+
     gpio_put(PIN_ES100_EN, 1);
     sleep_ms(100);
 
@@ -178,7 +190,7 @@ void core1_entry(){
         fatal_error("ES100 not responding / returned invalid device ID (expected 0x10, received 0x%02x)", device_id);
 
     while(true){
-        sleep_ms(1000);
+        tight_loop_contents();
     }
 }
 
@@ -195,7 +207,7 @@ int main(){
 
     //This core will handle USB, uart, and any other code that is added by pico-sdk, the second core will handle nothing but i2c and our IRQ, this maximizes timing accuracy.
 	while(true){
-		sleep_ms(1000);
+        tight_loop_contents();
 	}
 
 }
